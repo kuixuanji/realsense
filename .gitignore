@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.idea/
+.vscode/
+.env
+local_config.py
+*n.pt
+runs/
+diagnostics/
+.claude

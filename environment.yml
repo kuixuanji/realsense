@@ -1,0 +1,9 @@
+name: realsense
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+
+# Ubuntu/NVIDIA 安装请运行 scripts/setup_ubuntu.sh。脚本会先装匹配 CUDA 12.1
+# 的 PyTorch，再安装 requirements.txt，避免 pip 误选 CPU 包或重复下载 CUDA 依赖。

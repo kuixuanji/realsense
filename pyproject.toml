@@ -1,0 +1,9 @@
+[project]
+name = "realsense-natural-language-navigation"
+version = "0.4.0"
+description = "RealSense D435 object localization and natural-language target selection prototype"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
