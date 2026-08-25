@@ -169,7 +169,7 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 python main.py --selector deepseek
 ```
 
-`auto` 在配置了密钥时使用 DeepSeek，否则使用本地规则；DeepSeek API、网络或 JSON 校验失败时也会回退本地规则。大模型只接收结构化候选并返回 ID，距离与角度始终由本地计算。
+默认直接运行 `python main.py` 时使用完全离线的本地规则。`auto` 在配置了密钥时使用 DeepSeek，否则使用本地规则；DeepSeek API、网络或 JSON 校验失败时也会回退本地规则。大模型只接收结构化候选并返回 ID，距离与角度始终由本地计算。
 
 DeepSeek 调用使用兼容 Responses API 的 Python SDK，并在代码中将客户端显式命名为 `DeepSeekClient(api_key=..., base_url=...)`。实际请求固定发往 `DEEPSEEK_BASE_URL`，并调用 `client.responses.create(...)`。项目不再提供 OpenAI 服务、模型或 API Key 配置。
 

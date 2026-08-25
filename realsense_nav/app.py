@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--imgsz", type=int, default=640, help="YOLO 推理图像尺寸")
     parser.add_argument("--device", default="auto", help="YOLO 设备，如 auto、cpu 或 0")
     parser.add_argument("--tracker", default="botsort.yaml", help="Ultralytics 跟踪器配置")
-    parser.add_argument("--selector", choices=("auto", "local", "deepseek"), default="auto")
+    parser.add_argument("--selector", choices=("auto", "local", "deepseek"), default="local")
     parser.add_argument("--deepseek-model", default=get_setting("DEEPSEEK_MODEL", "deepseek-v4-flash"))
     parser.add_argument(
         "--deepseek-base-url",
