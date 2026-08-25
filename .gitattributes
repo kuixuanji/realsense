@@ -1,0 +1,12 @@
+# 所有文本文件，提交时自动将 CRLF 转为 LF
+* text=auto
+
+# 明确指定某些文件强制 LF（如 shell 脚本）
+*.sh text eol=lf
+# 明确指定 Windows 批处理强制 CRLF（否则无法运行）
+*.bat text eol=crlf
+
+# 二进制文件绝对禁止转换（否则图片/压缩包会损坏）
+*.png binary
+*.jpg binary
+*.zip binary
