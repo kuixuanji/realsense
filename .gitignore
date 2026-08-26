@@ -9,6 +9,6 @@ local_config.py
 *n.pt
 runs/
 diagnostics/
+codex_save/
 .claude/
 .agents/
-
