@@ -1,6 +1,6 @@
 # RealSense D435 自然语言目标定位
 
-这是一个面向 Ubuntu 的独立 Python 原型：D435 提供彩色图和对齐深度，YOLO 检测并持续跟踪常见物体，自然语言选择器确定用户指向的候选，程序输出目标相对相机正前方的距离和 `0°～180°` 方向角。
+这是一个可在不同操作系统上手动创建 Conda 环境的独立 Python 原型：D435 提供彩色图和对齐深度，YOLO 检测并持续跟踪常见物体，自然语言选择器确定用户指向的候选，程序输出目标相对相机正前方的距离和 `0°～180°` 方向角。
 
 ```text
 D435 彩色/深度 → YOLO26m + BoT-SORT → 前景深度簇 → 三维坐标
@@ -12,7 +12,6 @@ D435 彩色/深度 → YOLO26m + BoT-SORT → 前景深度簇 → 三维坐标
 
 ## 本版关键改进
 
-- Ubuntu 22.04 安装脚本，使用阿里云镜像安装 Python 3.11 依赖和 CUDA 12.1 PyTorch；
 - 默认模型从最小的 `yolo26n.pt` 升级为精度更高的 `yolo26m.pt`；
 - 使用 Ultralytics BoT-SORT 的运动模型和相机运动补偿维持跨帧 ID；
 - 普通目标漏检后记忆 4 秒，已选目标记忆 15 秒；
@@ -25,21 +24,74 @@ D435 彩色/深度 → YOLO26m + BoT-SORT → 前景深度簇 → 三维坐标
 - 深度图默认使用 librealsense 官方直方图均衡着色，并包含动态米制图例；
 - D435 自检会报告 USB 类型、深度覆盖率、中央深度，并可保存诊断图。
 
-## Ubuntu 快速开始
+## 环境准备
 
-硬件验证基线是 Ubuntu 22.04、NVIDIA RTX 4060 Laptop、CUDA Toolkit 12.1 和 Intel RealSense D435。进入项目目录后运行：
+建议使用 Python 3.11。项目的实机验证基线是 Ubuntu 22.04、NVIDIA RTX 4060 Laptop、CUDA 12.1 和 Intel RealSense D435；其他系统需先确保 D435 驱动和 `pyrealsense2` 可用。
+
+### 1. 创建 Conda 环境
 
 ```bash
-bash scripts/setup_ubuntu.sh
+conda create -n realsense python=3.11 pip -y
 conda activate realsense
 ```
 
-脚本先创建/更新 `realsense` 环境，再从阿里云安装 `torch 2.4.1+cu121` 和其余 PyPI 依赖。安装完成后会打印 PyTorch、CUDA 可用状态和 GPU 名称。
+如果普通终端无法执行 `conda activate`，先运行 `conda init` 并重新打开终端。后续命令都在已激活的 `realsense` 环境中执行。
+
+### 2. 安装 PyTorch
+
+CPU 和 CUDA 需要不同的 PyTorch wheel。根据运行设备选择一种 pip 命令，不要重复安装。
+
+CPU 版（Windows / Linux，无 NVIDIA GPU 或只做功能验证）：
+
+```bash
+python -m pip install torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cpu
+```
+
+macOS 版：
+
+```bash
+python -m pip install torch==2.4.1 torchvision==0.19.1
+```
+
+CUDA 12.1 版（Windows / Linux 的 NVIDIA GPU）：
+
+```bash
+python -m pip install torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121
+```
+
+CUDA 版需要已正确安装兼容的 NVIDIA 驱动。安装后可检查实际运行设备：
+
+```bash
+python -c "import torch; print(torch.__version__); print('CUDA:', torch.cuda.is_available()); print('device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+```
+
+### 3. 安装其余依赖
+
+```bash
+conda install -c conda-forge "numpy>=1.26,<3" "opencv>=4.10,<5" "pyrealsense2>=2.55" "ultralytics>=8.3" "lap>=0.5.12" "openai>=3,<4" "pydantic>=2.8" "pytest>=8.3"
+```
+
+上述命令使用 conda-forge 安装运行和测试依赖。项目的直接依赖如下：
+
+| 依赖 | 用途 |
+| --- | --- |
+| `torch==2.4.1` | CPU 或 CUDA 模型推理 |
+| `torchvision==0.19.1` | PyTorch 视觉算子 |
+| `numpy>=1.26,<3` | 深度数组与稳健统计 |
+| `opencv>=4.10,<5` | 提供 `cv2`，用于图像处理、窗口、标注和诊断图 |
+| `pyrealsense2>=2.55` | RealSense D435 采集、对齐和深度处理 |
+| `ultralytics>=8.3` | YOLO 检测与 BoT-SORT 跟踪 |
+| `lap>=0.5.12` | 跟踪器线性分配 |
+| `openai>=3,<4` | DeepSeek Responses API 兼容客户端 |
+| `pydantic>=2.8` | 大模型输出结构校验 |
+| `pytest>=8.3` | 单元测试 |
+
+### 4. 检查相机
 
 检查相机并保存当前画面：
 
 ```bash
-python main.py --check-device --diagnostic-dir /tmp/realsense_diagnostic
+python main.py --check-device --diagnostic-dir diagnostics
 ```
 
 正常结果应包含：
@@ -48,9 +100,9 @@ python main.py --check-device --diagnostic-dir /tmp/realsense_diagnostic
 - `USB 3.x`；
 - 彩色图与对齐深度图尺寸；
 - 有效深度像素比例和中央中位深度；
-- `/tmp/realsense_diagnostic/color.png`、`depth_colormap.png`、`preview.png`。
+- `diagnostics/color.png`、`depth_colormap.png`、`preview.png`。
 
-如果设备能被 `lsusb` 看到但程序无权限访问，安装 librealsense 的 udev rules 后重新插拔相机，并确认当前用户拥有 `video`/`plugdev` 设备权限。不要使用 USB 2.0 集线器。
+Ubuntu 上如果设备能被 `lsusb` 看到但程序无权限访问，安装 librealsense 的 udev rules 后重新插拔相机，并确认当前用户拥有 `video`/`plugdev` 设备权限。不要使用 USB 2.0 集线器。
 
 ## 运行
 
@@ -221,14 +273,9 @@ python main.py --no-depth-filter
 
 ```bash
 conda activate realsense
-bash scripts/run_tests.sh
+python -m pytest
 ```
 
-测试覆盖方向角、前景深度簇、MAD 过滤、反投影、本地中文解析、API 结构校验、IoU 跟踪以及目标记忆/重捕获。
-测试脚本会禁止自动加载全局 ROS pytest 插件，避免已经 `source /opt/ros/humble/setup.bash` 的终端把 Python 3.10 ROS 包混入 Python 3.11 Conda 测试。
-
-## Windows 旧环境
-
-旧 PowerShell 安装脚本仍保留在 `scripts/setup_env.ps1`，但当前维护和实机验证以 Ubuntu 为准。Windows 不应运行 Ubuntu CUDA wheel 安装脚本。
+测试覆盖方向角、前景深度簇、MAD 过滤、反投影、本地中文解析、API 结构校验、IoU 跟踪以及目标记忆/重捕获。Linux 终端如果已经 `source /opt/ros/humble/setup.bash`，可改用 `bash scripts/run_tests.sh`，防止全局 ROS pytest 插件混入当前 Conda 环境。
 
 详细模块和调用关系见根目录的 `代码结构说明.md`。
