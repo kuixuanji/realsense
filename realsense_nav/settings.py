@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from importlib import import_module
 from types import ModuleType
@@ -17,10 +16,7 @@ def _local_config() -> ModuleType | None:
 
 
 def get_setting(name: str, default: str = "") -> str:
-    """按环境变量、本地 Python 配置、默认值的顺序读取字符串设置。"""
-    environment_value = os.getenv(name)
-    if environment_value is not None and environment_value.strip():
-        return environment_value.strip()
+    """从本地 Python 配置读取字符串设置，未配置时返回默认值。"""
     module = _local_config()
     if module is not None:
         local_value = getattr(module, name, None)
@@ -31,4 +27,3 @@ def get_setting(name: str, default: str = "") -> str:
 
 def has_setting(name: str) -> bool:
     return bool(get_setting(name))
-

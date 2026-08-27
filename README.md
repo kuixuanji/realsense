@@ -225,14 +225,7 @@ python main.py --selector deepseek
 
 DeepSeek 调用使用兼容 Responses API 的 Python SDK，并在代码中将客户端显式命名为 `DeepSeekClient(api_key=..., base_url=...)`。实际请求固定发往 `DEEPSEEK_BASE_URL`，并调用 `client.responses.create(...)`。项目不再提供 OpenAI 服务、模型或 API Key 配置。
 
-也可通过环境变量配置，环境变量优先于 `local_config.py`：
-
-```bash
-export DEEPSEEK_API_KEY="你的密钥"
-export DEEPSEEK_MODEL="deepseek-v4-flash"
-export DEEPSEEK_BASE_URL="https://api.deepseek.com"
-python main.py --selector auto
-```
+项目从 `local_config.py` 读取上述配置。
 
 DeepSeek 客户端始终忽略 `HTTP_PROXY`、`HTTPS_PROXY` 和 `ALL_PROXY` 等系统代理变量并直接连接，避免错误的系统代理导致初始化或请求失败。
 

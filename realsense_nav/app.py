@@ -203,35 +203,6 @@ def _print_selection(
     return None
 
 
-def _refresh_selection_for_output(
-    result: SelectionResult,
-    snapshot: list[LocalizedObject],
-    memory: TargetMemory,
-) -> tuple[SelectionResult, list[LocalizedObject]]:
-    """选择器只决定快照中的 ID，输出前改用该 ID 的最新定位结果。"""
-    if result.status != "matched" or result.target_id is None:
-        return result, snapshot
-    current = memory.get(result.target_id)
-    if current is None:
-        return (
-            SelectionResult(
-                status="not_found",
-                reason=f"目标 #{result.target_id} 在选择返回前已离开记忆范围",
-                source=result.source,
-            ),
-            [],
-        )
-    return (
-        SelectionResult(
-            status="matched",
-            target_id=current.id,
-            reason=result.reason,
-            source=result.source,
-        ),
-        [current],
-    )
-
-
 def run(args: argparse.Namespace) -> int:
     selector: TargetSelector = build_selector(
         args.selector,
@@ -329,15 +300,10 @@ def run(args: argparse.Namespace) -> int:
                 except Exception as exc:
                     print(f"目标选择失败：{type(exc).__name__}: {exc}", file=sys.stderr)
                 else:
-                    result, output_objects = _refresh_selection_for_output(
-                        result,
-                        snapshot,
-                        memory,
-                    )
-                    new_selected_id = _print_selection(command, result, output_objects)
+                    new_selected_id = _print_selection(command, result, snapshot)
                     if new_selected_id is not None:
-                        memory.select(new_selected_id)
-                        selected_id = memory.selected_id
+                        selected_id = new_selected_id
+                        memory.select(selected_id)
                 pending = None
                 pending_context = None
 
@@ -405,15 +371,10 @@ def run(args: argparse.Namespace) -> int:
             except Exception as exc:
                 print(f"目标选择失败：{type(exc).__name__}: {exc}", file=sys.stderr)
             else:
-                result, output_objects = _refresh_selection_for_output(
-                    result,
-                    snapshot,
-                    memory,
-                )
-                new_selected_id = _print_selection(command, result, output_objects)
+                new_selected_id = _print_selection(command, result, snapshot)
                 if new_selected_id is not None:
-                    memory.select(new_selected_id)
-                    selected_id = memory.selected_id
+                    selected_id = new_selected_id
+                    memory.select(selected_id)
         if args.max_frames > 0:
             elapsed = max(1e-6, time.perf_counter() - started_at)
             print(
