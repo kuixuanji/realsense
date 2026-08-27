@@ -9,6 +9,9 @@ from .models import Detection, LocalizedObject
 from .tracking import bbox_iou
 
 
+MAX_TARGET_ID = 1000
+
+
 @dataclass(slots=True)
 class _MemoryEntry:
     obj: LocalizedObject
@@ -32,6 +35,7 @@ class TargetMemory:
         smoothing: float = 0.35,
         min_observations: int = 2,
         candidate_confidence: float = 0.30,
+        max_target_id: int = MAX_TARGET_ID,
     ) -> None:
         if memory_seconds <= 0:
             raise ValueError("memory_seconds 必须大于 0")
@@ -43,13 +47,21 @@ class TargetMemory:
             raise ValueError("min_observations 必须至少为 1")
         if not 0.0 < candidate_confidence <= 1.0:
             raise ValueError("candidate_confidence 必须位于 (0, 1]")
+        if max_target_id < 1:
+            raise ValueError("max_target_id 必须至少为 1")
         self.memory_seconds = memory_seconds
         self.selected_memory_seconds = selected_memory_seconds
         self.smoothing = smoothing
         self.min_observations = min_observations
         self.candidate_confidence = candidate_confidence
+        self.max_target_id = int(max_target_id)
         self.selected_id: int | None = None
         self._entries: dict[int, _MemoryEntry] = {}
+        # 跟踪器内部 ID 可以持续增长；这里映射为 1～max_target_id 的用户 ID。
+        # 用户 ID 由记忆生命周期持有，只有目标过期或被容量策略淘汰后才复用。
+        self._tracker_to_target: dict[int, int] = {}
+        self._tracker_last_seen: dict[int, float] = {}
+        self._next_target_id = 1
         # BoT-SORT may assign a new ID after a short occlusion.  Once the new ID has
         # been matched to a remembered target, keep using the original, user-facing
         # ID for observations, depth-hole detections and rendering.
@@ -62,6 +74,22 @@ class TargetMemory:
 
     def canonicalize_detections(self, detections: list[Detection]) -> list[Detection]:
         """将跟踪器的新 ID 归一为稳定 ID，并删除同一目标的重复框。"""
+        mapped = [
+            replace(
+                detection,
+                track_id=self._tracker_to_target.get(
+                    detection.track_id,
+                    detection.track_id,
+                ),
+            )
+            for detection in detections
+        ]
+        return self._canonicalize_public_detections(mapped)
+
+    def _canonicalize_public_detections(
+        self,
+        detections: list[Detection],
+    ) -> list[Detection]:
         result: list[Detection] = []
         positions: dict[int, int] = {}
         for detection in detections:
@@ -88,12 +116,18 @@ class TargetMemory:
     ) -> list[LocalizedObject]:
         now = time.monotonic() if now_s is None else float(now_s)
         self.reacquired_on_last_update = False
+        observations, mapped_detections = self._assign_target_ids(
+            observations,
+            detections or [],
+            now,
+        )
         observations = self._canonicalize_observations(observations)
         observations = self._rebind_selected(observations, now)
-        # _rebind_selected may have added a new alias.  Apply it to every input so
-        # an old/new-ID pair in the same frame becomes exactly one memory entry.
         observations = self._canonicalize_observations(observations)
-        canonical_detections = self.canonicalize_detections(detections or [])
+        observations = self._rebind_recent_memory(observations, now)
+        # 重绑定可能增加新别名；再次归一化，使旧/新 ID 同帧只产生一个条目。
+        observations = self._canonicalize_observations(observations)
+        canonical_detections = self._canonicalize_public_detections(mapped_detections)
         seen: set[int] = set()
 
         for current in observations:
@@ -152,8 +186,7 @@ class TargetMemory:
             )
 
         for track_id in expired:
-            del self._entries[track_id]
-            self._remove_aliases_for(track_id)
+            self._release_target_id(track_id)
         if self.selected_id is not None and self.selected_id not in self._entries:
             self.selected_id = None
         return self.objects()
@@ -188,6 +221,178 @@ class TargetMemory:
             visited.add(current)
             current = self._id_aliases[current]
         return current
+
+    def _assign_target_ids(
+        self,
+        observations: list[LocalizedObject],
+        detections: list[Detection],
+        now: float,
+    ) -> tuple[list[LocalizedObject], list[Detection]]:
+        raw_ids = list(
+            dict.fromkeys(
+                [obj.id for obj in observations]
+                + [detection.track_id for detection in detections]
+            )
+        )
+        incoming = set(raw_ids)
+        self._cleanup_stale_tracker_ids(now, incoming)
+
+        protected: set[int] = set()
+        if self.selected_id is not None:
+            protected.add(self.selected_id)
+        for raw_id in raw_ids:
+            target_id = self._tracker_to_target.get(raw_id)
+            if target_id is None:
+                continue
+            self._tracker_last_seen[raw_id] = now
+            protected.add(target_id)
+            protected.add(self._canonical_id(target_id))
+
+        for raw_id in raw_ids:
+            if raw_id in self._tracker_to_target:
+                continue
+            target_id = self._allocate_target_id(raw_id, protected)
+            self._tracker_to_target[raw_id] = target_id
+            self._tracker_last_seen[raw_id] = now
+            protected.add(target_id)
+
+        mapped_observations = [
+            replace(
+                obj,
+                detection=replace(
+                    obj.detection,
+                    track_id=self._tracker_to_target[obj.id],
+                ),
+            )
+            for obj in observations
+        ]
+        mapped_detections = [
+            replace(
+                detection,
+                track_id=self._tracker_to_target[detection.track_id],
+            )
+            for detection in detections
+        ]
+        return mapped_observations, mapped_detections
+
+    def _allocate_target_id(self, raw_id: int, protected: set[int]) -> int:
+        used = self._used_target_ids()
+        preferred = raw_id if 1 <= raw_id <= self.max_target_id else None
+        if preferred is not None and preferred not in used:
+            self._next_target_id = preferred % self.max_target_id + 1
+            return preferred
+
+        target_id = self._find_free_target_id(used)
+        if target_id is not None:
+            return target_id
+        if not self._evict_oldest_unprotected(protected):
+            raise RuntimeError(
+                f"目标 ID 池 1～{self.max_target_id} 已满，"
+                "当前可见目标和选中目标不能安全释放"
+            )
+        target_id = self._find_free_target_id(self._used_target_ids())
+        if target_id is None:
+            raise RuntimeError("释放旧目标后仍没有可用目标 ID")
+        return target_id
+
+    def _find_free_target_id(self, used: set[int]) -> int | None:
+        for _ in range(self.max_target_id):
+            candidate = self._next_target_id
+            self._next_target_id = candidate % self.max_target_id + 1
+            if candidate not in used:
+                return candidate
+        return None
+
+    def _used_target_ids(self) -> set[int]:
+        used = set(self._entries)
+        used.update(self._tracker_to_target.values())
+        used.update(self._id_aliases)
+        used.update(self._id_aliases.values())
+        return used
+
+    def _cleanup_stale_tracker_ids(self, now: float, incoming: set[int]) -> None:
+        stale: list[int] = []
+        stale_aliases: set[int] = set()
+        for raw_id, target_id in self._tracker_to_target.items():
+            if raw_id in incoming:
+                continue
+            canonical_id = self._canonical_id(target_id)
+            last_seen = self._tracker_last_seen.get(raw_id, now)
+            # 重绑定产生的源 ID 不必跟随选中目标占用完整的延长 TTL；超过普通
+            # memory 时长后，跟踪器即使再次给出该原始 ID，也可重新执行重绑定。
+            if target_id != canonical_id and now - last_seen > self.memory_seconds:
+                stale.append(raw_id)
+                stale_aliases.add(target_id)
+                continue
+            if canonical_id in self._entries:
+                continue
+            if now - last_seen > self.memory_seconds:
+                stale.append(raw_id)
+        for raw_id in stale:
+            self._tracker_to_target.pop(raw_id, None)
+            self._tracker_last_seen.pop(raw_id, None)
+        mapped_ids = set(self._tracker_to_target.values())
+        for source_id in stale_aliases:
+            if source_id not in mapped_ids:
+                self._id_aliases.pop(source_id, None)
+
+    def _evict_oldest_unprotected(self, protected: set[int]) -> bool:
+        # 没有有效记忆的旧跟踪器映射最适合优先释放。
+        orphaned = [
+            raw_id
+            for raw_id, target_id in self._tracker_to_target.items()
+            if target_id not in protected
+            and self._canonical_id(target_id) not in protected
+            and self._canonical_id(target_id) not in self._entries
+        ]
+        if orphaned:
+            raw_id = min(
+                orphaned,
+                key=lambda item: self._tracker_last_seen.get(item, float("-inf")),
+            )
+            target_id = self._tracker_to_target[raw_id]
+            for source_id, mapped_id in list(self._tracker_to_target.items()):
+                if mapped_id == target_id:
+                    self._tracker_to_target.pop(source_id, None)
+                    self._tracker_last_seen.pop(source_id, None)
+            return True
+
+        candidates = [
+            (track_id, entry)
+            for track_id, entry in self._entries.items()
+            if track_id != self.selected_id and track_id not in protected
+        ]
+        if not candidates:
+            return False
+        track_id, _ = min(
+            candidates,
+            key=lambda item: (item[1].obj.is_visible, item[1].last_seen_s),
+        )
+        self._release_target_id(track_id)
+        return True
+
+    def _release_target_id(self, target_id: int) -> None:
+        canonical_id = self._canonical_id(target_id)
+        related_ids = {canonical_id}
+        related_ids.update(
+            source_id
+            for source_id in self._id_aliases
+            if source_id == canonical_id
+            or self._canonical_id(source_id) == canonical_id
+        )
+        raw_ids = [
+            raw_id
+            for raw_id, mapped_id in self._tracker_to_target.items()
+            if mapped_id in related_ids
+            or self._canonical_id(mapped_id) == canonical_id
+        ]
+        for raw_id in raw_ids:
+            self._tracker_to_target.pop(raw_id, None)
+            self._tracker_last_seen.pop(raw_id, None)
+        self._entries.pop(canonical_id, None)
+        self._remove_aliases_for(canonical_id)
+        if self.selected_id == canonical_id:
+            self.selected_id = None
 
     def _register_alias(self, source_id: int, target_id: int) -> None:
         canonical_target = self._canonical_id(target_id)
@@ -357,4 +562,79 @@ class TargetMemory:
         result = list(observations)
         result[index] = rebound
         self.reacquired_on_last_update = True
+        return result
+
+    def _rebind_recent_memory(
+        self,
+        observations: list[LocalizedObject],
+        now: float,
+    ) -> list[LocalizedObject]:
+        """将短时完全遮挡后产生的新 ID 绑定回位置未变的普通 memory。"""
+        observed_ids = {obj.id for obj in observations}
+        remembered = [
+            (track_id, entry)
+            for track_id, entry in self._entries.items()
+            if track_id != self.selected_id
+            and track_id not in observed_ids
+            and not entry.obj.is_visible
+            and now - entry.last_seen_s <= self.memory_seconds
+        ]
+        fresh = [
+            (index, current)
+            for index, current in enumerate(observations)
+            if current.id not in self._entries
+        ]
+        if not remembered or not fresh:
+            return observations
+
+        pairs: list[tuple[float, int, int]] = []
+        for track_id, entry in remembered:
+            old = entry.obj
+            age = max(0.0, now - entry.last_seen_s)
+            for index, current in fresh:
+                if current.class_name != old.class_name:
+                    continue
+                iou = bbox_iou(old.detection.bbox, current.detection.bbox)
+                spatial = math.hypot(current.x_m - old.x_m, current.z_m - old.z_m)
+                angle_delta = abs(current.signed_angle_deg - old.signed_angle_deg)
+                tight_limit = max(0.20, min(0.60, old.distance_m * 0.15))
+                broad_limit = max(0.35, min(1.00, old.distance_m * 0.25))
+                strong_overlap = (
+                    iou >= 0.55
+                    and spatial <= broad_limit
+                    and angle_delta <= 10.0
+                )
+                close_position = (
+                    iou >= 0.25
+                    and spatial <= tight_limit
+                    and angle_delta <= 6.0
+                )
+                if not strong_overlap and not close_position:
+                    continue
+                score = (
+                    iou * 2.0
+                    - spatial * 0.75
+                    - angle_delta * 0.03
+                    - age * 0.01
+                )
+                pairs.append((score, track_id, index))
+
+        pairs.sort(reverse=True)
+        assigned_memories: set[int] = set()
+        assigned_observations: set[int] = set()
+        result = list(observations)
+        for _, track_id, index in pairs:
+            if track_id in assigned_memories or index in assigned_observations:
+                continue
+            source_id = result[index].id
+            self._register_alias(source_id, track_id)
+            result[index] = replace(
+                result[index],
+                detection=replace(result[index].detection, track_id=track_id),
+            )
+            assigned_memories.add(track_id)
+            assigned_observations.add(index)
+
+        if assigned_memories:
+            self.reacquired_on_last_update = True
         return result

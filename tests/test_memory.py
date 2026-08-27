@@ -179,3 +179,131 @@ def test_visual_detection_keeps_target_visible_when_depth_temporarily_fails() ->
     assert current.is_visible
     assert current.depth_age_s == 1.5
     assert current.detection.bbox == detection.bbox
+
+
+def test_unselected_target_rebinds_after_short_full_occlusion() -> None:
+    memory = TargetMemory(min_observations=1)
+    memory.update([obj(2)], now_s=1.0)
+    hidden = memory.update([], now_s=1.5)
+    assert [item.id for item in hidden] == [2]
+    assert not hidden[0].is_visible
+
+    new_detection = Detection(99, "chair", 0.8, (12, 10, 52, 50))
+    current = memory.update(
+        [obj(99, x=0.05, bbox=new_detection.bbox)],
+        detections=[new_detection],
+        now_s=2.0,
+    )
+
+    assert [item.id for item in current] == [2]
+    assert current[0].is_visible
+    assert current[0].observation_count == 2
+    assert memory.reacquired_on_last_update
+    assert memory.canonicalize_detections([new_detection])[0].track_id == 2
+
+
+def test_unselected_memory_does_not_absorb_different_nearby_target() -> None:
+    memory = TargetMemory(min_observations=1)
+    memory.update([obj(2)], now_s=1.0)
+    memory.update([], now_s=1.5)
+
+    current = memory.update(
+        [obj(99, x=0.6, bbox=(70, 10, 110, 50))],
+        now_s=2.0,
+    )
+
+    assert [item.id for item in current] == [2, 99]
+    assert not memory.get(2).is_visible
+    assert memory.get(99).is_visible
+
+
+def test_target_ids_wrap_without_clearing_current_memory() -> None:
+    memory = TargetMemory(
+        memory_seconds=10.0,
+        selected_memory_seconds=20.0,
+        min_observations=1,
+        max_target_id=3,
+    )
+    memory.update(
+        [
+            obj(1),
+            obj(2, x=0.5, bbox=(70, 10, 110, 50)),
+            obj(1001, x=1.0, bbox=(120, 10, 160, 50)),
+        ],
+        now_s=1.0,
+    )
+    memory.select(1)
+    memory.update(
+        [obj(1), obj(2, x=0.5, bbox=(70, 10, 110, 50))],
+        now_s=2.0,
+    )
+
+    current = memory.update(
+        [
+            obj(1),
+            obj(2, x=0.5, bbox=(70, 10, 110, 50)),
+            obj(1002, x=1.5, bbox=(170, 10, 210, 50)),
+        ],
+        now_s=3.0,
+    )
+
+    assert [item.id for item in current] == [1, 2, 3]
+    assert memory.selected_id == 1
+    assert memory.get(1).observation_count == 3
+    assert memory.get(2).observation_count == 3
+    assert memory.get(3).detection.bbox == (170, 10, 210, 50)
+
+
+def test_target_id_pool_never_reuses_current_or_selected_ids() -> None:
+    memory = TargetMemory(
+        memory_seconds=10.0,
+        selected_memory_seconds=20.0,
+        min_observations=1,
+        max_target_id=2,
+    )
+    memory.update(
+        [obj(1), obj(2, x=0.5, bbox=(70, 10, 110, 50))],
+        now_s=1.0,
+    )
+    memory.select(1)
+
+    try:
+        memory.update(
+            [
+                obj(1),
+                obj(2, x=0.5, bbox=(70, 10, 110, 50)),
+                obj(1001, x=1.0, bbox=(120, 10, 160, 50)),
+            ],
+            now_s=2.0,
+        )
+    except RuntimeError as exc:
+        assert "ID 池" in str(exc)
+    else:
+        raise AssertionError("全部 ID 仍在使用时不应覆盖现有目标")
+
+    assert [item.id for item in memory.objects()] == [1, 2]
+    assert memory.selected_id == 1
+
+
+def test_stale_rebind_alias_id_can_be_reused() -> None:
+    memory = TargetMemory(
+        memory_seconds=4.0,
+        selected_memory_seconds=20.0,
+        min_observations=1,
+        max_target_id=2,
+    )
+    memory.update([obj(1)], now_s=1.0)
+    memory.select(1)
+    memory.update([obj(1001, x=0.05, bbox=(12, 10, 52, 50))], now_s=2.0)
+
+    memory.update([], now_s=7.0)
+    current = memory.update(
+        [obj(1002, x=0.05, bbox=(12, 10, 52, 50))],
+        now_s=8.0,
+    )
+
+    assert [item.id for item in current] == [1]
+    assert memory.selected_id == 1
+    assert memory.canonicalize_detections(
+        [Detection(1002, "chair", 0.8, (12, 10, 52, 50))]
+    )[0].track_id == 1
