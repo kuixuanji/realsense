@@ -18,6 +18,11 @@ class Detection:
         x1, _, x2, _ = self.bbox
         return (x1 + x2) / 2.0
 
+    @property
+    def center_y(self) -> float:
+        _, y1, _, y2 = self.bbox
+        return (y1 + y2) / 2.0
+
 
 @dataclass(frozen=True, slots=True)
 class LocalizedObject:

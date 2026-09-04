@@ -48,9 +48,6 @@ class RealSenseCamera:
         self.pipeline = rs.pipeline()
         self.config = rs.config()
         self.align = rs.align(rs.stream.color)
-        # Match the RealSense Viewer-style depth rendering: the SDK colorizer uses
-        # histogram equalization by default and reveals much more local depth detail
-        # than a fixed 0-8 m linear colormap.
         self.colorizer = rs.colorizer() if create_depth_color else None
         if self.colorizer is not None:
             self.colorizer.set_option(rs.option.color_scheme, 0.0)
